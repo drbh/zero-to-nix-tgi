@@ -1,0 +1,427 @@
+#!/bin/bash
+
+# TGI dev box CLI Tool
+
+# EDIT THESE VARIABLES TO CHOSE YOUR ADVENTURE
+TAG_NAME="david-holtz-quick-nixos"
+KEY_NAME="YOUR_KEY_NAME" 
+MYTOKEN="YOUR_HF_TOKEN"
+# Just for the initial setup
+MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
+
+# Machine related variables
+# INSTANCE_TYPE="g6.12xlarge"
+INSTANCE_TYPE="g6.48xlarge"
+# INSTANCE_TYPE="g4dn.12xlarge"
+
+# Machine base variables
+VOLUME_SIZE=512
+IMAGE_ID="ami-0b3d51a362efa9e02"
+
+# HF related variables
+REGION="us-east-1"
+SUBNET_ID="YOUR_SUBNET_ID"
+SECURITY_GROUP_ID="YOUR_SECURITY_GROUP_ID"
+
+# overwrite the default values with values from .config if the file exists
+if [ -f config.ini ]; then
+    source config.ini
+else
+    echo "❌ config.ini file not found. Using default values."
+fi
+
+
+# note the hash in fron of the 5th line is require for the first run, do not edit.
+make_tmp_of_config() {
+    echo "{ modulesPath, pkgs, lib, ... }: {"
+    echo "  imports = ["
+    echo "    \"\${modulesPath}/virtualisation/amazon-image.nix\""
+    echo "    (builtins.fetchTarball \"https://github.com/msteen/nixos-vscode-server/tarball/master\")"
+    echo "#    ./cachix.nix # uncomment after adding cachix"
+    echo "  ];"
+    echo "  system.stateVersion = \"24.05\";"
+    echo "  services.vscode-server.enable = true;" 
+
+    echo "  # enable cuda"
+    echo "  nixpkgs.config.allowUnfree = true;"
+    echo "  nixpkgs.config.cudaSupport = true;" 
+
+    echo "  environment.systemPackages = with pkgs; ["
+    echo "    git"
+    echo "    gh"
+    echo "    zsh"
+    echo "    oh-my-zsh"
+    echo "    byobu"
+    echo "    tmux"
+    echo "    cachix"
+    echo "    cudaPackages.cudatoolkit"
+    echo "    nodejs"
+    echo "    vscode"
+    echo "    pre-commit"
+    echo "    ruff"
+    echo "  ];" 
+
+    echo "  # enable nvidia graphics"
+    echo "  hardware.nvidia = {"
+    echo "    modesetting.enable = true;"
+    echo "    open = false;"
+    echo "  };"
+    echo "  hardware.graphics = {"
+    echo "    enable = true;"
+    echo "    enable32Bit = true;"
+    echo "  };"
+    echo "  services.xserver.videoDrivers = [ \"nvidia\" ];" 
+
+    echo "  # set up Zsh as the default shell system-wide"
+    echo "  users.defaultUserShell = pkgs.zsh;" 
+
+    echo "  # configure Zsh and Oh My Zsh"
+    echo "  programs.zsh = {"
+    echo "    enable = true;"
+    echo "    ohMyZsh = {"
+    echo "      enable = true;"
+    echo "      theme = \"robbyrussell\";"
+    echo "      plugins = [ \"git\" \"docker\" \"npm\" ];"
+    echo "    };"
+    echo "    shellAliases = {"
+    echo "      update = \"sudo nixos-rebuild switch\";"
+    echo "      example = \"echo \'yo\'\";"
+    echo "    };"
+    echo "  };" 
+
+    echo "  # enable nix-command and flakes features"
+    echo "  nix.settings.experimental-features = [ \"nix-command\" \"flakes\" ];"
+    echo "}"
+}
+
+# display usage information
+usage() {
+    echo "Usage: $0 <command> [options]"
+    echo "Commands:"
+    echo "  up              Create and setup a new devbox"
+    echo "  setup           Setup the development environment"
+    echo "  add-to-local    Add the devbox to local SSH config"
+    echo "  open            Open a byobu session with three panes"
+    echo "  down            Shutdown the devbox"
+    echo "  help            Display this help message"
+}
+
+# get the private ip by finding the instance id (must be running)
+get_private_from_tag_name() {
+    instance_id=$(aws ec2 describe-instances \
+        --region $REGION \
+        --filters "Name=tag:Name,Values=$TAG_NAME" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].InstanceId' \
+        --output text)
+
+    if [ "$instance_id" == "None" ]; then
+        echo "❌ Instance was not created. Exiting"
+        exit 1
+    fi
+
+    # Get the private IP address of the instance
+    private_ip=$(aws ec2 describe-instances \
+        --region us-east-1 \
+        --instance-ids $instance_id \
+        --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+        --output text)
+
+    echo $private_ip
+}
+
+
+# create and setup a new devbox
+up() {
+    echo "👍 Creating and setting up a new devbox..."
+
+    # get script start time
+    start_time=$(date +%s)
+
+    make_tmp_of_config > /tmp/insta.nix
+    echo "✅ Configuration file created at /tmp/insta.nix"
+
+    # before running any commands make sure the key exists
+    if [ ! -f ~/.ssh/$KEY_NAME.pem ]; then
+        echo "❌ Key does not exist. Please create the key and try again"
+        exit 1
+    fi
+
+    # Create EC2 instance
+    instance_id=$(aws ec2 run-instances \
+        --region $REGION \
+        --instance-type $INSTANCE_TYPE \
+        --image-id $IMAGE_ID \
+        --key-name $KEY_NAME \
+        --subnet-id $SUBNET_ID \
+        --security-group-ids $SECURITY_GROUP_ID \
+        --block-device-mappings "[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":$VOLUME_SIZE}}]" \
+        --count 1 \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$TAG_NAME}]" \
+        --query 'Instances[0].InstanceId' \
+        --output text)
+
+    echo "✅ Instance ID: $instance_id"
+
+
+    if [ "$instance_id" == "None" ]; then
+        echo "❌ Instance was not created. Exiting"
+        exit 1
+    fi
+
+    # Wait for the instance to be in the 'running' state
+    aws ec2 wait instance-running --region $REGION --instance-ids $instance_id
+    echo "✅ Instance is running"
+
+    # Get the private IP address of the instance
+    private_ip=$(aws ec2 describe-instances \
+        --region us-east-1 \
+        --instance-ids $instance_id \
+        --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+        --output text)
+    echo "✅ Private IP: $private_ip"
+
+    # loop and check if the machine is back up
+    while true; do
+        ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "uptime" && break
+        sleep 5
+    done
+    echo "✅ Machine is back up"
+
+    # nano /etc/nixos/configuration.nix
+    local_config_path=/tmp/insta.nix
+
+    # now use scp to copy the local configuration.nix to the remote server
+    scp -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem "$local_config_path" root@"$private_ip":/etc/nixos/configuration.nix
+    echo "✅ Configuration file copied"
+
+    # set the nix-channel to unstable to allow graphics drivers
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "nix-channel --add https://nixos.org/channels/nixos-unstable-small nixos && nix-channel --update"
+    echo "✅ Nix channel set to unstable"
+
+    # now run the nixos-rebuild switch command
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "nixos-rebuild switch"
+    echo "✅ Nixos rebuild switch command run"
+
+    # reboot the machine
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "reboot"
+    echo "✅ Machine rebooting"
+
+    # loop and check if the machine is back up
+    while true; do
+        ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "uptime" && break
+        sleep 5
+    done
+    echo "✅ Machine is back up"
+
+    # now run the cachix use text-generation-inference
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "cachix use text-generation-inference"
+    echo "✅ Cachix use text-generation-inference"
+
+    # uncommment the 5th line of the configuration.nix
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "sed -i '5s/^#//' /etc/nixos/configuration.nix"
+    echo "✅ Uncommented the 5th line of the configuration.nix"
+
+    # now run the nixos-rebuild switch command
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "nixos-rebuild switch"
+    echo "✅ Nixos rebuild switch command run"
+
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "git clone https://github.com/huggingface/text-generation-inference.git"
+    echo "✅ Cloned the repo"
+
+    # cd into the repo and run the tests
+    # ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "cd text-generation-inference && nix develop .#impure --command ls"
+    ssh -o "StrictHostKeyChecking no" -i ~/.ssh/$KEY_NAME.pem -t root@$private_ip "cd text-generation-inference && nix develop .#pure --command ls"
+
+    # get script end time
+    end_time=$(date +%s)
+
+    # calculate script duration
+    duration=$((end_time - start_time))
+
+    echo "✅ Setup time: $duration seconds."
+
+}
+
+# setup the development environment
+setup() {
+    echo "👍 Setting up the development environment..."
+
+    # get script start time
+    start_time=$(date +%s)
+
+    private_ip=$(get_private_from_tag_name)
+    echo "✅ Private IP: $private_ip"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "export HF_TOKEN=$MYTOKEN && cd text-generation-inference && nix develop .#impure --command bash -c 'cd server && make gen-server'"
+    echo "✅ Protobufs generated"
+
+    # ssh -o "StrictHostKeyChecking no" \
+    #     -i ~/.ssh/$KEY_NAME.pem \
+    #     -t root@$private_ip "whoami"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "systemctl --user enable auto-fix-vscode-server.service"
+    echo "✅ Enabled auto-fix-vscode-server.service"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "systemctl --user start auto-fix-vscode-server.service"
+    echo "✅ Started auto-fix-vscode-server.service"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "ln -sfT /run/current-system/etc/systemd/user/auto-fix-vscode-server.service ~/.config/systemd/user/auto-fix-vscode-server.service"
+    echo "✅ Linked auto-fix-vscode-server.service"
+
+    # # check the ln status
+    # ssh -o "StrictHostKeyChecking no" \
+    #     -i ~/.ssh/$KEY_NAME.pem \
+    #     -t root@$private_ip "ls -l ~/.config/systemd/user/auto-fix-vscode-server.service"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "export HF_TOKEN=$MYTOKEN && cd text-generation-inference && nix develop .#impure --command text-generation-server download-weights $MODEL_NAME"
+    echo "✅ Weights downloaded"
+
+    end_time=$(date +%s)
+
+    # calculate script duration
+    duration=$((end_time - start_time))
+
+    echo "✅ Script duration: $duration seconds"
+}
+
+# add the devbox to local SSH config
+add_to_local() {
+    echo "👍 Adding devbox to local SSH config..."
+
+    # get script start time
+    start_time=$(date +%s)
+
+    private_ip=$(get_private_from_tag_name)
+    echo "✅ Private IP: $private_ip"
+
+    # now add to ~/.ssh/config if not already there
+    if ! grep -q $TAG_NAME ~/.ssh/config; then
+        echo "" >> ~/.ssh/config
+        echo "Host $TAG_NAME" >> ~/.ssh/config
+        echo "  HostName $private_ip" >> ~/.ssh/config
+        echo "  User root" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/$KEY_NAME.pem" >> ~/.ssh/config
+        echo "✅ Added to ~/.ssh/config"
+    else
+        echo "✅ Already in ~/.ssh/config"
+        # check if the private ip is the same
+        current_private_ip=$(grep -A 3 $TAG_NAME ~/.ssh/config | grep HostName | awk '{print $2}')
+        if [ "$current_private_ip" != "$private_ip" ]; then
+            echo "❌ Private IP is different. Updating ~/.ssh/config"
+            sed -i '' "s/$current_private_ip/$private_ip/g" ~/.ssh/config
+        else
+            echo "✅ Private IP is the same"
+        fi
+    fi
+}
+
+dev_commands() {
+    echo "Byobu session opened. Use Shift+Down to navigate between panes."
+    echo "Helpful commands for each pane:"
+    echo "Top pane:"
+    echo "  cd server"
+    echo "  export HF_TOKEN=YOUR_HF_TOKEN"
+    echo "  ATTENTION=flashinfer USE_PREFIX_CACHING=True MASTER_ADDR=127.0.0.1 MASTER_PORT=5555 python text_generation_server/cli.py serve meta-llama/Llama-3.1-8B-Instruct"
+    echo ""
+    echo "Middle pane:"
+    echo "  ATTENTION=flashinfer USE_PREFIX_CACHING=True cargo run --bin text-generation-router --release -- --tokenizer-name meta-llama/Llama-3.1-8B-Instruct --max-batch-prefill-tokens 1000 --max-input-tokens 1000 --max-total-tokens 1001"
+    echo ""
+    echo "Bottom pane (after everything is running):"
+    echo "  curl 127.0.0.1:3000/v1/completions \\"
+    echo "      -X POST \\"
+    echo "      -H 'Content-Type: application/json' \\"
+    echo "      -d '{\"model\": \"tgi\", \"prompt\": \"What is Deep Learning?\", \"max_tokens\": 20, \"temperature\": 0.0, \"stream\": true}'"
+}
+
+# open a byobu session with three panes
+open_session() {
+    echo "👍 Opening a three-pane byobu session..."
+
+    # get script start time
+    start_time=$(date +%s)
+
+    private_ip=$(get_private_from_tag_name)
+    echo "✅ Private IP: $private_ip"
+
+    ssh -o "StrictHostKeyChecking no" \
+        -i ~/.ssh/$KEY_NAME.pem \
+        -t root@$private_ip "cd text-generation-inference && nix develop .#impure --command ls && byobu new-session -d -s mysession && byobu split-window -v && byobu split-window -v && byobu select-layout even-vertical && byobu send-keys -t 0 'nix develop .#impure' C-m && byobu send-keys -t 1 'nix develop .#impure' C-m && byobu send-keys -t 2 'nix develop .#impure' C-m && byobu attach-session -t mysession"
+
+    end_time=$(date +%s)
+
+    # calculate script duration
+    duration=$((end_time - start_time))
+
+    echo "✅ Script duration: $duration seconds"
+}
+
+# shutdown the devbox
+down() {
+    echo "👍 Shutting down the devbox..."
+
+    # get script start time
+    start_time=$(date +%s)
+
+    # get the private ip by finding the instance id (must be running)
+    instance_id=$(aws ec2 describe-instances \
+        --region $REGION \
+        --filters "Name=tag:Name,Values=$TAG_NAME" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].InstanceId' \
+        --output text)
+
+    echo "✅ Instance ID: $instance_id"
+
+    if [ "$instance_id" == "None" ]; then
+        echo "❌ Instance was not created. Exiting"
+        exit 1
+    fi
+
+    aws ec2 terminate-instances \
+        --region us-east-1 \
+        --instance-ids $instance_id \
+        --output text
+
+    end_time=$(date +%s)
+
+    # calculate script duration
+    duration=$((end_time - start_time))
+
+    echo "✅ Script duration: $duration seconds"
+}
+
+# Main script logic
+case "$1" in
+    up)
+        up
+        ;;
+    setup)
+        setup
+        ;;
+    add-to-local)
+        add_to_local
+        ;;
+    open)
+        open_session
+        ;;
+    down)
+        down
+        ;;
+    help)
+        usage
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        usage
+        exit 1
+        ;;
+esac
