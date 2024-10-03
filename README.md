@@ -2,13 +2,19 @@
 
 this is a single file bash script that will setup a TGI dev box on AWS. It will start a multi-gpu instance, all of the cuda/gpu drivers, setup a basic dev environment, connect to the nix cache, clone the repo and build the flake for the first time.
 
- 
-# Setup
+# Quickstart
+
+download, make executable, and run the script (make sure you read the source code first!)
 
 ```bash
-# copy file and make executable
-chmod +x tginow
+curl \
+-fsSL https://raw.githubusercontent.com/drbh/zero-to-nix-tgi/refs/heads/main/tginow \
+> tginow \
+&& chmod +x tginow \
+&& ./tginow help
 ```
+
+🙌 yay, now you have `tginow` on your local machine.
 
 next make sure to setup your `config.ini` file with the following information:
 
