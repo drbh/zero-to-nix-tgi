@@ -16,6 +16,7 @@ IMAGE_ID="ami-0b3d51a362efa9e02"
 REGION="us-east-1"
 SUBNET_ID="YOUR_SUBNET_ID"
 SECURITY_GROUP_ID="YOUR_SECURITY_GROUP_ID"
+CACHIX_CACHE="text-generation-inference"
 
 # get key name from KEY_PATH
 KEY_NAME=$(basename "$KEY_PATH" .pem)
@@ -90,11 +91,13 @@ check_aws_sso() {
 # Generate NixOS configuration
 generate_nixos_config() {
     cat <<EOF >/tmp/insta.nix
-{ modulesPath, pkgs, lib, ... }: {
+{ config, modulesPath, pkgs, lib, ... }: {
   imports = [
     "\${modulesPath}/virtualisation/amazon-image.nix"
-    (builtins.fetchTarball "https://github.com/msteen/nixos-vscode-server/tarball/master")
-#    ./cachix.nix # uncomment after adding cachix
+    (builtins.fetchTarball {
+        url = "https://github.com/msteen/nixos-vscode-server/archive/refs/heads/master.tar.gz";
+        sha256 = "sha256-8PDNi/dgoI2kyM7uSiU4eoLBqUKoA+3TXuz+VWmuCOc=";
+    })
   ];
   system.stateVersion = "24.05";
   services.vscode-server.enable = true;
@@ -116,6 +119,7 @@ generate_nixos_config() {
     vscode
     pre-commit
     ruff
+    cron
   ];
 
   # Enable NVIDIA graphics
@@ -143,11 +147,42 @@ generate_nixos_config() {
     shellAliases = {
       update = "sudo nixos-rebuild switch";
       example = "echo 'yo'";
+      gpu_usage = "nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits";
+      gpu_usage_percent = "gpu_usage | awk -F, '{total+=\$1; used+=\$2} END {printf (used/total)*100}'";
+      gpu_usage_below_threshold = "gpu_usage_percent | xargs -I {} echo {}\"<5\" | bc";
     };
+  };
+
+  # Configure Byobu to allow mouse scrolling (improve this when updating users)
+  system.activationScripts.writeByobuConfig = {
+    text = ''
+      mkdir -p /root/.byobu
+      echo 'set -g mouse on' > /root/.byobu/.tmux.conf
+      chmod 0644 /root/.byobu/.tmux.conf
+    '';
+  };
+
+  services.cron = {
+    enable = true;
+    systemCronJobs = [
+      "0 * * * *      root    /run/current-system/sw/bin/bash -c 'uptime' >> /tmp/whoami.log"
+    ];
   };
 
   # Enable nix-command and flakes features
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  # Add Cachix cache
+  nix.settings = {
+    substituters = [
+      "https://cache.nixos.org"
+      "https://${CACHIX_CACHE}.cachix.org"
+    ];
+    trusted-public-keys = [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      "${CACHIX_CACHE}.cachix.org-1:xdQ8eIf9LuIwS0n0/5ZmOHLaCXC6yy7MgzQNK/y+R1c="
+    ];
+  };
 }
 EOF
     echo "✅ NixOS configuration generated at /tmp/insta.nix"
@@ -216,86 +251,74 @@ up() {
         --query 'Instances[0].InstanceId' \
         --output text)
 
-    echo "✅ Instance ID: $instance_id"
+    echo "✅ 1. Instance ID: $instance_id"
 
     aws ec2 wait instance-running --region "$REGION" --instance-ids "$instance_id"
-    echo "✅ Instance is running"
+    echo "✅ 2. Instance is running"
 
     local private_ip
     private_ip=$(get_private_ip)
-    echo "✅ Private IP: $private_ip"
+    echo "✅ 3. Private IP: $private_ip"
 
     until ssh_command "$private_ip" "uptime"; do
         sleep 5
     done
-    echo "✅ Machine is accessible"
+    echo "✅ 4. Machine is accessible"
 
     scp_command "$private_ip" "/tmp/insta.nix" "/etc/nixos/configuration.nix"
-    echo "✅ Configuration file copied"
+    echo "✅ 5. Configuration file copied"
 
     ssh_command "$private_ip" "nix-channel --add https://nixos.org/channels/nixos-unstable-small nixos && nix-channel --update"
-    echo "✅ Nix channel set to unstable"
+    echo "✅ 6. Nix channel set to unstable"
 
     ssh_command "$private_ip" "nixos-rebuild switch"
-    echo "✅ NixOS rebuild switch command run"
+    echo "✅ 7. NixOS rebuild switch command run"
+
+    ssh_command "$private_ip" "systemctl --user enable auto-fix-vscode-server.service && ln -sfT /run/current-system/etc/systemd/user/auto-fix-vscode-server.service ~/.config/systemd/user/auto-fix-vscode-server.service"
+    echo "✅ 8. Enabled and linked auto-fix-vscode-server.service"
 
     ssh_command "$private_ip" "reboot"
-    echo "✅ Machine rebooting"
+    echo "✅ 9. Machine rebooting to enable CUDA drivers and VSCode service"
 
     until ssh_command "$private_ip" "uptime"; do
         sleep 5
     done
-    echo "✅ Machine is back up"
+    echo "✅ 10. Machine is back up"
 
-    ssh_command "$private_ip" "cachix use text-generation-inference"
-    echo "✅ Cachix use text-generation-inference"
+    ssh_command "$private_ip" "nvidia-smi && git clone https://github.com/huggingface/text-generation-inference.git"
+    echo "✅ 11. Cloned the repo"
 
-    ssh_command "$private_ip" "sed -i '5s/^#//' /etc/nixos/configuration.nix"
-    echo "✅ Uncommented the 5th line of the configuration.nix"
-
-    ssh_command "$private_ip" "nixos-rebuild switch"
-    echo "✅ NixOS rebuild switch command run"
-
-    ssh_command "$private_ip" "git clone https://github.com/huggingface/text-generation-inference.git"
-    echo "✅ Cloned the repo"
-
-    ssh_command "$private_ip" "cd text-generation-inference && nix develop .#pure --command ls"
-
-    local end_time
-    end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    echo "✅ Setup time: $duration seconds."
-}
-
-# Setup the development environment
-setup() {
-    echo "👍 Setting up the development environment..."
-    local start_time
-    start_time=$(date +%s)
-
-    local private_ip
-    private_ip=$(get_private_ip)
-    echo "✅ Private IP: $private_ip"
-
-    ssh_command "$private_ip" "export HF_TOKEN=$HF_TOKEN && cd text-generation-inference && nix develop .#impure --command bash -c 'cd server && make gen-server'"
-    echo "✅ Protobufs generated"
-
-    ssh_command "$private_ip" "systemctl --user enable auto-fix-vscode-server.service"
-    echo "✅ Enabled auto-fix-vscode-server.service"
-
-    ssh_command "$private_ip" "systemctl --user start auto-fix-vscode-server.service"
-    echo "✅ Started auto-fix-vscode-server.service"
-
-    ssh_command "$private_ip" "ln -sfT /run/current-system/etc/systemd/user/auto-fix-vscode-server.service ~/.config/systemd/user/auto-fix-vscode-server.service"
-    echo "✅ Linked auto-fix-vscode-server.service"
+    ssh_command "$private_ip" "cd text-generation-inference && nix develop .#impure --command bash -c 'cd server && make gen-server'"
+    echo "✅ 12. Server files prepared for development"
 
     ssh_command "$private_ip" "export HF_TOKEN=$HF_TOKEN && cd text-generation-inference && nix develop .#impure --command text-generation-server download-weights $MODEL_NAME"
-    echo "✅ Weights downloaded"
+    echo "✅ 13. Weights downloaded"
+
+    if ! grep -q "$TAG_NAME" "$HOME/.ssh/config"; then
+        {
+            echo ""
+            echo "Host $TAG_NAME"
+            echo "  HostName $private_ip"
+            echo "  User root"
+            echo "  IdentityFile $KEY_PATH"
+        } >>"$HOME/.ssh/config"
+        echo "✅ 14. Added to ~/.ssh/config"
+    else
+        echo "✅ 14. Already in ~/.ssh/config"
+        local current_private_ip
+        current_private_ip=$(grep -A 3 "$TAG_NAME" "$HOME/.ssh/config" | grep HostName | awk '{print $2}')
+        if [[ "$current_private_ip" != "$private_ip" ]]; then
+            echo "❌ Private IP is different. Updating ~/.ssh/config"
+            sed -i '' "s/$current_private_ip/$private_ip/g" "$HOME/.ssh/config"
+        else
+            echo "✅ 14. Private IP is the same"
+        fi
+    fi
 
     local end_time
     end_time=$(date +%s)
     local duration=$((end_time - start_time))
-    echo "✅ Script duration: $duration seconds"
+    echo "✅ 15. Setup time: $duration seconds."
 }
 
 # Add the devbox to local SSH config
@@ -364,7 +387,8 @@ down() {
         --region "$REGION" \
         --filters "Name=tag:Name,Values=$TAG_NAME" "Name=instance-state-name,Values=running" \
         --query 'Reservations[0].Instances[0].InstanceId' \
-        --output text)
+        --output text \
+        --no-cli-pager)
 
     echo "✅ Instance ID: $instance_id"
 
@@ -376,7 +400,8 @@ down() {
     aws ec2 terminate-instances \
         --region "$REGION" \
         --instance-ids "$instance_id" \
-        --output text
+        --no-cli-pager \
+        --no-verify-ssl > /dev/null 2>&1  
 
     local end_time
     end_time=$(date +%s)
@@ -391,8 +416,6 @@ Usage: $0 <command> [options]
 Commands:
   status          Get the status of the devbox
   up              Create and setup a new devbox
-  setup           Setup the development environment
-  add-to-local    Add the devbox to local SSH config
   open            Open a byobu session with three panes
   ssh             SSH into the devbox
   down            Shutdown the devbox
@@ -402,6 +425,8 @@ EOF
 
 # Main script logic
 main() {
+    echo "🚀 TGI Devbox CLI Tool"
+    
     load_config
     check_tag_name
     check_dependencies
@@ -410,16 +435,17 @@ main() {
 
     case "$1" in
     status)
-        get_private_ip
+        # TODO: improve how the output is displayed
+        devbox_ip=$(get_private_ip)
+        # show a green emoji if the devbox is up and a red one if it's down
+        if [[ -z "$devbox_ip" ]]; then
+            echo "🔴 Devbox is down. Get started with \`./tginow up\`"
+        else
+            echo "🟢 Devbox is up at $devbox_ip"
+        fi
         ;;
     up)
         up
-        ;;
-    setup)
-        setup
-        ;;
-    add-to-local)
-        add_to_local
         ;;
     open)
         open_session
