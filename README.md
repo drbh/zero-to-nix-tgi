@@ -12,6 +12,16 @@ curl \
 > tginow \
 && chmod +x tginow \
 && ./tginow help
+# Usage: ./tginow <command> [options]
+# Commands:
+#   status          Get the status of the devbox
+#   up              Create and setup a new devbox
+#   setup           Setup the development environment
+#   add-to-local    Add the devbox to local SSH config
+#   open            Open a byobu session with three panes
+#   ssh             SSH into the devbox
+#   down            Shutdown the devbox
+#   help            Display this help message
 ```
 
 🙌 yay, now you have `tginow` on your local machine.
@@ -46,6 +56,47 @@ this takes about 10 minutes but will setup the machine and environment needed to
 
 ```bash
 ./tginow up
+# 👍 Creating and setting up a new devbox...
+# ✅ NixOS configuration generated at /tmp/insta.nix
+# ✅ Instance ID: i-abcd1234fffffffff
+# ✅ Instance is running
+# ✅ Private IP: 99.90.99.99
+# Warning: Permanently added '99.90.99.99' (ED25519) to the list of known hosts.
+#  02:28:08  up   0:00,  1 user,  load average: 0.65, 0.20, 0.07
+# Connection to 99.90.99.99 closed.
+# ✅ Machine is accessible
+# insta.nix                                                                  100% 1320    80.3KB/s   00:00
+# ✅ Configuration file copied
+# unpacking channels...
+# Connection to 99.90.99.99 closed.
+# ✅ Nix channel set to unstable
+# this derivation will be built:
+# ... (this takes ~10 minutes)
+# ✅ NixOS rebuild switch command run
+# Connection to 10.90.1.192 closed.
+# ✅ Machine rebooting
+# ssh: connect to host 10.90.1.192 port 22: Connection refused
+# ...
+# ✅ Machine is back up
+# Cachix configuration written to /etc/nixos/cachix.nix.
+# ...
+# ✅ Cachix use text-generation-inference
+# Connection to 10.90.1.192 closed.
+# ✅ Uncommented the 5th line of the configuration.nix
+# building Nix...
+# ...
+# Connection to 10.90.1.192 closed.
+# ✅ NixOS rebuild switch command run
+# Cloning into 'text-generation-inference'...
+# ...
+# ✅ Cloned the repo
+# assets	    clients		Dockerfile_intel   flake.nix	      Makefile	 rust-toolchain.toml
+# backends    CODE_OF_CONDUCT.md	Dockerfile.nix	   integration-tests  nix	 sagemaker-entrypoint.sh
+# benchmark   CONTRIBUTING.md	Dockerfile.trtllm  launcher	      proto	 server
+# Cargo.lock  Dockerfile		docs		   LICENSE	      README.md  tgi-entrypoint.sh
+# Cargo.toml  Dockerfile_amd	flake.lock	   load_tests	      router	 update_doc.py
+# Connection to 10.90.1.192 closed.
+# ✅ Setup time: 584 seconds.
 ```
 
 # Prepare the devbox
