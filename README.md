@@ -73,19 +73,19 @@ this takes about 10 minutes but will setup the machine and environment needed to
 # this derivation will be built:
 # ... (this takes ~10 minutes)
 # ✅ NixOS rebuild switch command run
-# Connection to 10.90.1.192 closed.
+# Connection to 99.90.99.99 closed.
 # ✅ Machine rebooting
-# ssh: connect to host 10.90.1.192 port 22: Connection refused
+# ssh: connect to host 99.90.99.99 port 22: Connection refused
 # ...
 # ✅ Machine is back up
 # Cachix configuration written to /etc/nixos/cachix.nix.
 # ...
 # ✅ Cachix use text-generation-inference
-# Connection to 10.90.1.192 closed.
+# Connection to 99.90.99.99 closed.
 # ✅ Uncommented the 5th line of the configuration.nix
 # building Nix...
 # ...
-# Connection to 10.90.1.192 closed.
+# Connection to 99.90.99.99 closed.
 # ✅ NixOS rebuild switch command run
 # Cloning into 'text-generation-inference'...
 # ...
@@ -95,7 +95,7 @@ this takes about 10 minutes but will setup the machine and environment needed to
 # benchmark   CONTRIBUTING.md	Dockerfile.trtllm  launcher	      proto	 server
 # Cargo.lock  Dockerfile		docs		   LICENSE	      README.md  tgi-entrypoint.sh
 # Cargo.toml  Dockerfile_amd	flake.lock	   load_tests	      router	 update_doc.py
-# Connection to 10.90.1.192 closed.
+# Connection to 99.90.99.99 closed.
 # ✅ Setup time: 584 seconds.
 ```
 

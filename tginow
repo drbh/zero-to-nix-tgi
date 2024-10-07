@@ -25,11 +25,40 @@ load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE"
     else
-        echo "❌ Config file not found. Using default values."
+        echo "❌ Configuration file not found. Creating a new one..."
+        create_config
+        source "$CONFIG_FILE"
     fi
 
     KEY_NAME=$(basename "$KEY_PATH" .pem)
 }
+
+# Create example configuration file
+create_config() {
+    cat <<EOF >"$CONFIG_FILE"
+KEY_PATH="$HOME/.ssh/my_tgi_key.pem"
+TAG_NAME="YOUR_TAG_NAME"
+HF_TOKEN=""
+MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
+INSTANCE_TYPE="g6.48xlarge"
+VOLUME_SIZE=512
+IMAGE_ID="ami-0b3d51a362efa9e02"
+REGION="us-east-1"
+SUBNET_ID="YOUR_SUBNET_ID"
+SECURITY_GROUP="YOUR_SECURITY_GROUP_ID"
+EOF
+    echo "✅ Configuration file created at $CONFIG_FILE"
+}
+
+
+# Check that tag name is not default value
+check_tag_name() {
+    if [[ "$TAG_NAME" == "YOUR_TAG_NAME" ]]; then
+        echo "❌ TAG_NAME is not set. Please set it in the configuration file and try again."
+        exit 1
+    fi
+}
+
 
 # Check dependencies
 check_dependencies() {
@@ -374,6 +403,7 @@ EOF
 # Main script logic
 main() {
     load_config
+    check_tag_name
     check_dependencies
     check_aws_config
     check_aws_sso
