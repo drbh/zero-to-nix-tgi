@@ -95,8 +95,8 @@ generate_nixos_config() {
   imports = [
     "\${modulesPath}/virtualisation/amazon-image.nix"
     (builtins.fetchTarball {
-        url = "https://github.com/msteen/nixos-vscode-server/archive/refs/heads/master.tar.gz";
-        sha256 = "sha256-8PDNi/dgoI2kyM7uSiU4eoLBqUKoA+3TXuz+VWmuCOc=";
+        url = "https://github.com/msteen/nixos-vscode-server/archive/8b6db451de46ecf9b4ab3d01ef76e59957ff549f.tar.gz";
+        sha256 = "09j4kvsxw1d5dvnhbsgih0icbrxqv90nzf0b589rb5z6gnzwjnqf";
     })
   ];
   system.stateVersion = "24.05";
